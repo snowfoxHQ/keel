@@ -1,0 +1,8 @@
+[package]
+name = "keel-pnl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+keel-core = { path = "../keel-core" }

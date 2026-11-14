@@ -1,0 +1,9 @@
+[package]
+name = "keel-engine"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+keel-core = { path = "../keel-core" }
+keel-data = { path = "../keel-data" }
