@@ -2,5 +2,7 @@
 //!
 //! 确定性四约束见 docs/BASELINE.md §3；本 crate 是全部模块的依赖底座。
 pub mod fixed;
+pub mod pool;
 
 pub use fixed::{Money, Price, Qty};
+pub use pool::{Arena, Handle, Pool, PoolError};
