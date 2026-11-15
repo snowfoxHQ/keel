@@ -85,7 +85,6 @@ pub struct Backtester {
     fills: usize,
     rejects: usize,
     cancels: usize,
-    seq: u64,
     event_count: usize,
 }
 
@@ -103,9 +102,21 @@ impl Backtester {
             fills: 0,
             rejects: 0,
             cancels: 0,
-            seq: 0,
             event_count: 0,
         })
+    }
+
+    /// 只读访问成交事实账本（诊断/对账用）。
+    pub fn ledger(&self) -> &TradeLedger {
+        &self.ledger
+    }
+
+    /// 回测开始前注册条件单（§8.1 注册全序：按调用次序分配 seq）。
+    pub fn register_guard(
+        &mut self,
+        spec: keel_guard::RuleSpec,
+    ) -> Result<keel_guard::RuleHandle, keel_guard::GuardError> {
+        self.guard.register(spec)
     }
 
     /// 运行完整回测（bars 必须已按 ts 升序且互不重复——由 keel-data 保证）。

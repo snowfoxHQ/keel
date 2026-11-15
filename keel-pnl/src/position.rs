@@ -91,9 +91,10 @@ impl CostMethod for FifoCost {
         if qty_raw <= 0 {
             return Ok(());
         }
-        // 复用队首已耗尽的槽位（压缩复用，物理容量不变）
+        // 移除队首已耗尽批次（drain 前缀，而非 truncate 保留——head==len 时
+        // truncate 是 no-op，会复活已消费批次导致后续释放成本错批）
         if self.head > 0 {
-            self.batches.truncate(self.head);
+            self.batches.drain(..self.head);
             self.head = 0;
         }
         if self.batches.len() >= self.batches.capacity() {

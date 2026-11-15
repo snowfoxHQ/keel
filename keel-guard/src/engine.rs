@@ -42,8 +42,6 @@ pub struct GuardEngine {
     cancels: Vec<CancelRecord>,
     /// 桶扫描候选暂存（复用）。
     cand: Vec<u32>,
-    /// 池遍历暂存（复用；热路径禁止分配）。
-    tmp: Vec<u32>,
 }
 
 impl GuardEngine {
@@ -61,7 +59,6 @@ impl GuardEngine {
             fired: Vec::with_capacity(cfg.max_rules),
             cancels: Vec::with_capacity(cfg.max_rules),
             cand: Vec::with_capacity(cfg.bucket_cap.max(64)),
-            tmp: Vec::with_capacity(cfg.max_rules),
         })
     }
 

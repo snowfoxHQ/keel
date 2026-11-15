@@ -8,6 +8,6 @@ pub mod backtest;
 pub mod golden;
 pub mod matcher;
 
-pub use backtest::{BacktestConfig, BacktestReport, Strategy};
-pub use golden::{GoldenReport, GoldenRunner};
+pub use backtest::{BacktestConfig, BacktestReport, Backtester, Strategy, StrategyCtx};
+pub use golden::{FirstDiff, GoldenExpectation, GoldenReport, GoldenRunner};
 pub use matcher::{BarMatcher, Fill, MatchOutcome, MatcherConfig, NotTraded, OrderIntent, OrderKind};

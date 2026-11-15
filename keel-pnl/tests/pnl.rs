@@ -235,3 +235,26 @@ fn ledger_full_rejected() {
         Err(LedgerError::Full)
     );
 }
+
+/// 回归（P5 golden 发现）：全平后 head==len 时再开仓，已消费批次不得"复活"。
+/// 剧情：买 1@10.00、买 1@11.00、卖 2@9.00（全平，realized −30.00）、
+/// 买 1@9.00、卖 1@10.00（必须平 9.00 批次 → realized +10.00，而非复活 10.00 批次 → 0）。
+#[test]
+fn fifo_no_batch_resurrection_after_full_close() {
+    let mut a = FifoAccount::new(FifoCost::new(8));
+    let mut ledger = TradeLedger::with_capacity(8);
+    ledger.record(0, Side::Buy, p(100_000), q(1), &ZERO_FEE).unwrap();
+    ledger.record(1, Side::Buy, p(110_000), q(1), &ZERO_FEE).unwrap();
+    ledger.record(2, Side::Sell, p(90_000), q(2), &ZERO_FEE).unwrap();
+    ledger.record(3, Side::Buy, p(90_000), q(1), &ZERO_FEE).unwrap();
+    ledger.record(4, Side::Sell, p(100_000), q(1), &ZERO_FEE).unwrap();
+    for i in 0..ledger.len() {
+        a.apply(ledger.get(i).unwrap()).unwrap();
+    }
+    // realized = (18 − 21) + (10 − 9) = −2.00 → −200_000_000
+    // （复活 bug 下最后一笔释放 10.00 批次 → realized 0 → 总 −3.00，可区分）
+    assert_eq!(a.realized_pnl().raw_i128(), -200_000_000);
+    // 终态清仓
+    assert_eq!(a.net_qty(), 0);
+    assert_eq!(a.held_cost().raw_i128(), 0);
+}
