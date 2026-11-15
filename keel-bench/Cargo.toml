@@ -6,3 +6,8 @@ rust-version.workspace = true
 
 [dependencies]
 keel-core = { path = "../keel-core" }
+keel-book = { path = "../keel-book" }
+
+[[bin]]
+name = "keel-bench-l1"
+path = "src/main.rs"
