@@ -214,24 +214,31 @@ impl Level {
         self.logical_len() < capacity
     }
 
-    /// 弹出队首存活订单（跳过并消费墓碑）。
-    fn pop_live(&mut self) -> Option<Handle> {
+    /// 窥视队首存活订单（跳过并消费墓碑；**不**移除存活订单）。
+    fn peek_live(&mut self) -> Option<Handle> {
         while self.head < self.queue.len() {
-            let pos = self.head;
-            let e = self.queue[pos].take();
-            self.head += 1;
-            if let Some(h) = e {
-                self.live -= 1;
-                return Some(h);
+            match self.queue[self.head] {
+                Some(h) => return Some(h),
+                None => {
+                    self.head += 1;
+                    self.dead -= 1;
+                }
             }
-            self.dead -= 1;
         }
         None
+    }
+
+    /// 消费队首存活订单（仅在 maker 完全成交时调用）。
+    fn consume_head(&mut self) {
+        debug_assert!(self.head < self.queue.len());
+        self.queue[self.head] = None;
+        self.head += 1;
+        self.live -= 1;
     }
 }
 
 /// 提交结果。
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SubmitOutcome {
     /// 剩余部分挂单句柄；完全成交则为 None。
     pub handle: Option<Handle>,
@@ -312,6 +319,12 @@ impl Book {
         self.pool.live()
     }
 
+    /// 指定档位的存活订单数（测试/对账用）。
+    pub fn live_at(&self, side: Side, price: Price) -> Result<usize, BookError> {
+        let idx = self.level_index(price)?;
+        Ok(self.levels(side)[idx].live as usize)
+    }
+
     /// 限价单提交（GTC）：先吃对手方队列（价格-时间优先），剩余挂入本方档位。
     ///
     /// preflight：池满 / 队列满 / 成交缓冲不足均在**任何状态变更前**返回结构化错误。
@@ -385,14 +398,14 @@ impl Book {
 
             // 吃该档位 FIFO
             loop {
-                let popped = {
+                let peeked = {
                     let levels = match opp {
                         Side::Bid => &mut self.bids[..],
                         Side::Ask => &mut self.asks[..],
                     };
-                    levels[bidx].pop_live()
+                    levels[bidx].peek_live()
                 };
-                let Some(h) = popped else {
+                let Some(h) = peeked else {
                     // 档位耗尽：清位图，推进 BBO 缓存
                     match opp {
                         Side::Bid => {
@@ -407,39 +420,74 @@ impl Book {
                     break;
                 };
                 let maker_empty = {
-                    let entry = self.pool.get_mut(h).ok_or(BookError::Inconsistent)?;
-                    let fill_qty = if entry.remaining.raw() < remaining.raw() {
-                        entry.remaining
+                    let (maker_id, maker_remaining) = {
+                        let e = self.pool.get(h).ok_or(BookError::Inconsistent)?;
+                        (e.id, e.remaining)
+                    };
+                    let fill_qty = if maker_remaining.raw() < remaining.raw() {
+                        maker_remaining
                     } else {
                         remaining
                     };
                     fills.push(Fill {
                         maker: h,
-                        maker_id: entry.id,
+                        maker_id,
                         price: maker_price,
                         qty: fill_qty,
                     })?;
                     remaining = remaining
                         .checked_sub(fill_qty)
                         .map_err(|_| BookError::Inconsistent)?;
-                    let maker_empty = entry.remaining.raw() == fill_qty.raw();
-                    entry.remaining = if maker_empty {
-                        Qty::from_raw(0)
-                    } else {
-                        entry
-                            .remaining
-                            .checked_sub(fill_qty)
-                            .map_err(|_| BookError::Inconsistent)?
-                    };
+                    let maker_empty = maker_remaining.raw() == fill_qty.raw();
+                    {
+                        let entry = self.pool.get_mut(h).ok_or(BookError::Inconsistent)?;
+                        entry.remaining = if maker_empty {
+                            Qty::from_raw(0)
+                        } else {
+                            entry
+                                .remaining
+                                .checked_sub(fill_qty)
+                                .map_err(|_| BookError::Inconsistent)?
+                        };
+                    }
                     maker_empty
                 };
                 if maker_empty {
-                    // 完全成交：移出订单池（成交事实不可变，撤单语义见 §5.3）
+                    // 完全成交：移出订单池并消费队列头（成交事实不可变，撤单语义见 §5.3）
                     self.pool.remove(h).map_err(|_| BookError::Inconsistent)?;
+                    let levels = match opp {
+                        Side::Bid => &mut self.bids[..],
+                        Side::Ask => &mut self.asks[..],
+                    };
+                    levels[bidx].consume_head();
                 }
                 if remaining.raw() == 0 || !maker_empty {
                     // maker 部分成交保留（此时 taker 必然已满）
                     break;
+                }
+            }
+            // taker 恰好吃空本档位（未走"档位耗尽"分支）时，同步位图与 BBO
+            let drained = {
+                let levels = match opp {
+                    Side::Bid => &self.bids[..],
+                    Side::Ask => &self.asks[..],
+                };
+                levels[bidx].live == 0
+            };
+            if drained {
+                match opp {
+                    Side::Bid => {
+                        self.bid_bmp.clear(bidx);
+                        if self.best_bid == Some(bidx) {
+                            self.best_bid = self.bid_bmp.prev_set_before(bidx);
+                        }
+                    }
+                    Side::Ask => {
+                        self.ask_bmp.clear(bidx);
+                        if self.best_ask == Some(bidx) {
+                            self.best_ask = self.ask_bmp.next_set_from(bidx + 1);
+                        }
+                    }
                 }
             }
             if remaining.raw() == 0 {
@@ -512,9 +560,6 @@ impl Book {
             level.live -= 1;
             level.dead += 1;
             pool.remove(h).map_err(|_| BookError::OrderGone)?;
-        }
-        if remaining.raw() > 0 {
-            // 防御：存活订单数量必 > 0
         }
         if self.levels(side)[level_idx].live == 0 {
             match side {
