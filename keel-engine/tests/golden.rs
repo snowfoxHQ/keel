@@ -115,29 +115,31 @@ fn deterministic_across_runs() {
     assert_eq!(a.fills, b.fills);
 }
 
-/// §13.1/2/4：端到端语义断言（成交数、成交价、持仓路径、快照锚点数）。
+/// §13.1/2/4：端到端语义断言（成交数、持仓路径、快照锚点）。
 #[test]
 fn pipeline_semantics() {
     let r = run_once();
     // fills：bar1 买 200 + bar3 买 100 + bar5 止损卖 300 + bar7 买 100 + bar10 卖 100 = 5
     assert_eq!(r.fills, 5, "fills={}", r.fills);
-    // rejects：bar6 限价不可达 1 次
-    assert_eq!(r.rejects, 1);
-    // cancels：bar5 止损全平后 on_fill(0) → ZeroQty 自动撤销
-    assert_eq!(r.cancels, 1);
+    // bar6 限价不可达 → 挂起重试（bar7 成交），不算拒绝
+    assert_eq!(r.rejects, 0);
+    // 止损单触发即失效（槽位已释放），无存活规则 → 无 CancelAck
+    assert_eq!(r.cancels, 0);
     // 终态持仓 0（买 200 + 买 100 − 止损卖 300 + 买 100 − 卖 100）
     assert_eq!(r.final_net_qty, 0);
-    // 净已实现应为正：99.50×200 + 101.30×100 − 91.99×300 + 91.00×100 − 93.00×100
-    // = 19900 + 10130 − 27597 + 9100 − 9300 = 2233 元（未计费用），费用后仍为正
-    assert!(r.final_realized_raw > 0, "realized={}", r.final_realized_raw);
-    // 现金 = 初始 + 已实现 − 未结成本（终态无持仓 → cash == initial + realized − fees）
+    // realized 精确手算：
+    //   止损卖 300@91.99 平 200@99.50（−1502.00）+ 100@101.30（−931.00）= −2433.00
+    //   bar10 卖 100@93.00 平 100@91.00 = +200.00 → 合计 −2233.00
+    assert_eq!(r.final_realized_raw, -223_300_000_000);
+    // 现金 = 初始 + 已实现 − 未结成本（终态无持仓）
     assert_eq!(
         r.final_cash_raw,
         1_000_000_000_000_000 + r.final_realized_raw - r.final_fees_raw
     );
-    // 快照锚点：每 4 事件一锚 + 末 Bar 收尾（事件数 5 fill + 1 trigger + 1 reject + 1 cancel = 8）
-    // → 锚点在事件 4 与 8 处 + 末 Bar 强制 → ≥ 2
-    assert!(r.snapshots.len() >= 2, "snapshots={:?}", r.snapshots);
+    // 快照锚点：事件 4（bar5 触发+成交）跨界一次 + 末 Bar 收尾 = 恰 2 个
+    assert_eq!(r.snapshots.len(), 2, "snapshots={:?}", r.snapshots);
+    assert_eq!(r.snapshots[0].0, 5);
+    assert_eq!(r.snapshots[1].0, 12);
 }
 
 /// §13 全项：黄金值比对（生成 → 比对 → 篡改 → 首个差异定位）。
@@ -186,12 +188,10 @@ fn golden_anchor_values() {
     let r = run_once();
     // §13.4 最终核算精确值（定点 raw）
     assert_eq!(r.fills, 5);
-    assert_eq!(r.rejects, 1);
-    assert_eq!(r.cancels, 1);
+    assert_eq!(r.rejects, 0);
+    assert_eq!(r.cancels, 0);
     assert_eq!(r.final_net_qty, 0);
-    // 手算：realized = 19900 − 27597 + 9100 − 9300 = −7897？不对——止损卖 300 股含买 200@99.50 与买 100@101.30
-    // FIFO：卖 300 先平 200@99.50（realized 92×200 = 18400 元）再平 100@101.30（realized −93×100×? …
-    // 以引擎精确值为锚（首次运行打印后固化）：
+    // realized 见 GOLDEN_REALIZED 注释（手算逐位一致）
     assert_eq!(r.final_realized_raw, GOLDEN_REALIZED);
     assert_eq!(r.final_fees_raw, GOLDEN_FEES);
     assert_eq!(r.event_hash, GOLDEN_EVENT_HASH);
@@ -200,13 +200,19 @@ fn golden_anchor_values() {
     assert_eq!(r.snapshots, GOLDEN_SNAPSHOTS);
 }
 
-// ---- 黄金锚值（由 golden_anchor_values 首次运行固化；变更须显式重新生成并记录） ----
+// ---- 黄金锚值（2026-11-16 P5-d 首次验证运行固化；变更须显式重新生成并记录） ----
 
-const GOLDEN_REALIZED: i128 = 0;
-const GOLDEN_FEES: i128 = 0;
-const GOLDEN_EVENT_HASH: u64 = 0;
-const GOLDEN_CHAIN_HASH: u64 = 0;
-const GOLDEN_SNAPSHOTS: &[(i64, u64)] = &[];
+/// realized：−2233.00 元（止损 −2433.00 + 末笔 +200.00）。
+const GOLDEN_REALIZED: i128 = -223_300_000_000;
+/// 费用：228.081 元（76027 元成交额 × 3e-6 逐笔 ceil）。
+const GOLDEN_FEES: i128 = 22_808_100;
+const GOLDEN_EVENT_HASH: u64 = 0xd7e8_01e3_09ab_b2e7;
+const GOLDEN_CHAIN_HASH: u64 = 0x9c05_30df_249b_6312;
+/// 快照锚点：事件 4 跨界（bar5）+ 末 Bar 收尾（bar12）。
+const GOLDEN_SNAPSHOTS: &[(i64, u64)] = &[
+    (5, 7_843_972_490_579_535_029),
+    (12, 12_403_186_040_105_700_829),
+];
 
 /// 打印当前运行值（--nocapture 用于固化黄金锚）。
 #[test]

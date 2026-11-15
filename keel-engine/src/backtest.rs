@@ -86,6 +86,8 @@ pub struct Backtester {
     rejects: usize,
     cancels: usize,
     event_count: usize,
+    /// 上次快照锚点的事件计数（防同计数重复锚定）。
+    last_anchor_events: usize,
 }
 
 impl Backtester {
@@ -103,6 +105,7 @@ impl Backtester {
             rejects: 0,
             cancels: 0,
             event_count: 0,
+            last_anchor_events: 0,
         })
     }
 
@@ -191,11 +194,17 @@ impl Backtester {
                 self.event_count += 1;
             }
 
-            // 4) 快照锚点（§13.2：每 N 事件 + 末根 Bar 强制收尾快照）
-            if self.cfg.snapshot_every > 0
-                && (self.event_count % self.cfg.snapshot_every == 0 || Some(bar.ts) == last_ts)
-            {
-                self.snapshots.push((bar.ts, self.state_hash()));
+            // 4) 快照锚点（§13.2：事件计数跨越 N 的边界才锚定一次，避免同计数重复锚；
+            //    末根 Bar 强制收尾快照）
+            if self.cfg.snapshot_every > 0 {
+                let crossed = self.event_count / self.cfg.snapshot_every
+                    > self.last_anchor_events / self.cfg.snapshot_every;
+                if (crossed && self.event_count > self.last_anchor_events)
+                    || Some(bar.ts) == last_ts
+                {
+                    self.last_anchor_events = self.event_count;
+                    self.snapshots.push((bar.ts, self.state_hash()));
+                }
             }
         }
 
