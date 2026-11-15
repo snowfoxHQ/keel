@@ -63,14 +63,28 @@ function render(d) {
   const pct = (d.return_bp / 100).toFixed(2);
   const cls = d.total_cents >= 0 ? "pos" : "neg";
   const sign = d.total_cents >= 0 ? "+" : "";
-  $("cards").innerHTML = [
+  const cards = [
     ["总盈亏", sign + yuan(d.total_cents) + " 元", cls],
     ["收益率", sign + pct + "%", cls],
     ["成交笔数", d.fills, ""],
     ["手续费合计", yuan(d.fees_cents) + " 元", ""],
     ["最终现金", yuan(d.final_cash_cents) + " 元", ""],
     ["最终持仓", d.net_shares + " 股", ""],
-  ].map(([t, v, c]) => '<div class="card"><div class="t">' + t + '</div><div class="v ' + c + '">' + v + "</div></div>").join("");
+  ];
+  // 对照基准：同期"买入持有"（buy_hold 策略本身就是基准，不显示）
+  let warn = "";
+  if (d.strategy !== "buy_hold" && typeof d.benchmark_bp === "number" && d.benchmark_bp !== 0) {
+    const bPct = (d.benchmark_bp / 100).toFixed(2);
+    cards.push(["同期买入持有", (d.benchmark_bp >= 0 ? "+" : "") + bPct + "%", d.benchmark_bp >= 0 ? "pos" : "neg"]);
+    if (d.return_bp < 0 && d.benchmark_bp > 0) {
+      warn = "本次回测亏损，但同期\"买入持有\"是赚的：" +
+        "频繁买卖的手续费（印花税 1% 每次卖出都收）和滑点磨损吃掉了涨幅。" +
+        "这不是计算错误——真实市场同样收这些费。试试把策略换成\"一次全仓买入持有\"对比。";
+    }
+  }
+  $("cards").innerHTML = cards
+    .map(([t, v, c]) => '<div class="card"><div class="t">' + t + '</div><div class="v ' + c + '">' + v + "</div></div>")
+    .join("") + (warn ? '<div class="warnbox">' + warn + "</div>" : "");
 
   const tb = $("trades").querySelector("tbody");
   tb.innerHTML = d.trades.map((r) =>

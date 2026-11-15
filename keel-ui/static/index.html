@@ -30,11 +30,11 @@
     <section>
       <h2>2 · 策略</h2>
       <select id="strategy">
-        <option value="day_cycle" selected>周期买卖：买入 100 股，持有 N 天后卖出，循环</option>
-        <option value="buy_hold">一次全仓买入，一直持有</option>
+        <option value="buy_hold" selected>一次全仓买入，一直持有（推荐先看这个）</option>
+        <option value="day_cycle">周期买卖：买入 100 股，持有 N 天后卖出再买，循环</option>
         <option value="ma_cross">均线交叉：短期均线上穿长期线买入，下穿卖出</option>
       </select>
-      <div id="param_day" class="params">
+      <div id="param_day" class="params hidden">
         <label>持有天数 <input type="number" id="hold_days" value="5" min="1"></label>
       </div>
       <div id="param_ma" class="params hidden">
@@ -53,6 +53,7 @@
     </section>
     <button id="run">开始回测</button>
     <div id="error" class="hidden"></div>
+    <p class="hint">提醒：A股卖出收印花税 1% + 佣金 + 滑点。频繁买卖（比如 5 天一换）的费用磨损可能超过涨幅——股价越低、每次买卖金额越小，磨损占比越大。所以"周期买卖"跑出来亏损、而"买入持有"赚钱是正常现象，真实市场同样如此。</p>
   </aside>
   <section id="result" class="hidden">
     <div id="cards"></div>

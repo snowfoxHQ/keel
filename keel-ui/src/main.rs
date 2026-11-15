@@ -472,7 +472,36 @@ fn run_backtest(body: &str) -> Result<String, String> {
     };
     let mut strat = Recorder { inner, curve: Vec::new() };
     let report = bt.run(&bars, &mut strat).map_err(|e| format!("回测运行失败：{e:?}"))?;
-    Ok(render(&bars, &strat.curve, &report, &bt, cash_raw, kind))
+
+    // 对照基准：同期"一次全仓买入持有"的收益（含期末持仓市值）。
+    // 作用：让用户一眼看出亏损是"策略频繁交易的费用磨损"还是"行情本身在跌"。
+    let benchmark_bp = if kind != "buy_hold" {
+        let cfg_b = BacktestConfig {
+            fees: FeeModel {
+                commission: Rate::from_raw(commission_bp * 10_000),
+                stamp_duty: Rate::from_raw(stamp_bp * 10_000),
+                transfer_fee: Rate::from_raw(transfer_bp * 10_000),
+            },
+            matcher: MatcherConfig {
+                slippage_raw: slippage_cents * 100,
+                limit_up: None,
+                limit_down: None,
+                min_lot_raw: 0,
+            },
+            guard: guard_cfg,
+            initial_cash_raw: cash_raw,
+            snapshot_every: 0,
+        };
+        let mut btb = Backtester::new(cfg_b).map_err(|_| "引擎初始化失败（资金超出范围？）")?;
+        let mut bh = BuyHold;
+        let rb = btb.run(&bars, &mut bh).map_err(|e| format!("基准回测运行失败：{e:?}"))?;
+        let last = bars.last().map(|b| b.close.raw()).unwrap_or(0) as i128;
+        let total_b = rb.final_cash_raw + (rb.final_net_qty * last) / 10_000 - cash_raw;
+        if cash_raw > 0 { total_b * 10_000 / cash_raw } else { 0 }
+    } else {
+        0 // buy_hold 即基准本身
+    };
+    Ok(render(&bars, &strat.curve, &report, &bt, cash_raw, kind, benchmark_bp))
 }
 /// 结果序列化为 JSON（金额统一"分"整数 = raw / 1e6；手写序列化，字段全为数字/数组）。
 fn render(
@@ -482,6 +511,7 @@ fn render(
     bt: &Backtester,
     cash_raw: i128,
     kind: &str,
+    benchmark_bp: i128,
 ) -> String {
     let close_of = |ts: i64| bars.iter().find(|b| b.ts == ts).map(|b| b.close.raw()).unwrap_or(0);
 
@@ -532,7 +562,7 @@ fn render(
     format!(
         "{{\"ok\":true,\"strategy\":\"{}\",\"fills\":{},\"rejects\":{},\"cancels\":{},\
          \"net_shares\":{},\"final_cash_cents\":{},\"realized_cents\":{},\"fees_cents\":{},\
-         \"total_cents\":{},\"return_bp\":{},\
+         \"total_cents\":{},\"return_bp\":{},\"benchmark_bp\":{},\
          \"event_hash\":\"{:#018x}\",\"chain_hash\":\"{:#018x}\",\
          \"curve\":[{}],\"price\":[{}],\"trades\":[{}],\"buys\":[{}],\"sells\":[{}]}}",
         kind,
@@ -545,6 +575,7 @@ fn render(
         report.final_fees_raw / 1_000_000,
         total_raw / 1_000_000,
         return_bp,
+        benchmark_bp,
         report.event_hash,
         report.chain_hash,
         curve_json,
