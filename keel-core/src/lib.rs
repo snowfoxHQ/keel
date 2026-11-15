@@ -6,5 +6,5 @@ pub mod fixed;
 pub mod pool;
 
 pub use event::{Event, EventKey, EventQueue, Phase, QueueError};
-pub use fixed::{Money, Price, Qty};
+pub use fixed::{Money, Price, Qty, RAW_BOUND};
 pub use pool::{Arena, Handle, Pool, PoolError};
