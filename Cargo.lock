@@ -76,6 +76,7 @@ dependencies = [
  "keel-data",
  "keel-engine",
  "keel-guard",
+ "keel-ingest",
  "keel-pnl",
 ]
 

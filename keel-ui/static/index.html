@@ -16,9 +16,9 @@
     <section>
       <h2>1 · 行情数据</h2>
       <label class="btn"><input type="radio" name="source" value="builtin" checked> 用内置样本（贵州茅台 2025 上半年日线）</label>
-      <label class="btn"><input type="radio" name="source" value="file"> 用自己的数据（黄金 CSV 文件）</label>
+      <label class="btn"><input type="radio" name="source" value="file"> 用自己的数据（CSV 文件，自动识别格式）</label>
       <input type="file" id="file" accept=".csv" disabled>
-      <p class="hint">自己的数据请先用 keel-ingest 清洗为黄金 CSV（ts,open,high,low,close,volume 六列）</p>
+      <p class="hint">支持两种：① 黄金 CSV（六列 ts,open,high,low,close,volume）；② 行情软件 / tushare 风格导出（ts_code,trade_date,open,high,low,close,vol,amount）——系统自动清洗：复权价浮点归位 0.01 元网格，脏行剔除，其余照常回测</p>
     </section>
     <section>
       <h2>2 · 策略</h2>

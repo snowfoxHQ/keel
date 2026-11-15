@@ -10,3 +10,4 @@ keel-data = { path = "../keel-data" }
 keel-engine = { path = "../keel-engine" }
 keel-guard = { path = "../keel-guard" }
 keel-pnl = { path = "../keel-pnl" }
+keel-ingest = { path = "../keel-ingest" }

@@ -251,6 +251,23 @@ impl MaCross {
 }
 // ---- 回测执行 + JSON 输出 ----
 
+/// 自动识别行情格式：黄金 CSV 直接用；tushare 风格源数据（首行含 ts_code）
+/// 走 keel-ingest 清洗（snap 归位 0.01 网格）。用户不需要知道"黄金 CSV"。
+fn parse_any_csv(text: &str) -> Result<Vec<Bar>, String> {
+    let head = text.trim_start().get(..64).unwrap_or("").to_ascii_lowercase();
+    if head.contains("ts_code") || head.contains("date,open") {
+        // 源格式：自动清洗（snap 归位 0.01 网格），被跳过的行不进回测
+        let (golden, _rep) = keel_ingest::clean_daily_csv(text, keel_ingest::SnapMode::Snap)
+            .map_err(|e| format!("数据清洗失败：{e:?}"))?;
+        let bars = parse_bars_csv(&golden)
+            .map_err(|e| format!("清洗后仍校验失败（数据损坏）：{e}"))?;
+        Ok(bars)
+    } else {
+        parse_bars_csv(text)
+            .map_err(|e| format!("行情数据校验失败：{e}（支持黄金 CSV 六列，或行情软件 tushare 风格导出，自动清洗）"))
+    }
+}
+
 /// 包装策略：每根 Bar 记录 (ts, 净持仓 raw, 现金 raw)，用于资金曲线。
 /// 注意时点：ctx 为当根撮合前状态，曲线含义 = "第 t 天开盘时账户净值"。
 struct Recorder {
@@ -271,7 +288,7 @@ fn run_backtest(body: &str) -> Result<String, String> {
         Some("builtin") => SAMPLE.to_string(),
         _ => f.get("csv").cloned().ok_or("没有行情数据：请上传文件或选择内置样本")?,
     };
-    let bars = parse_bars_csv(&csv_text).map_err(|e| format!("行情数据校验失败：{e}（黄金 CSV 六列 ts,open,high,low,close,volume；真实数据请先用 keel-ingest 清洗）"))?;
+    let bars = parse_any_csv(&csv_text)?;
 
     let get_i64 = |k: &str, dflt: i64| f.get(k).and_then(|v| v.trim().parse::<i64>().ok()).unwrap_or(dflt);
     let cash_yuan = get_i64("cash_yuan", 1_000_000).max(1);
