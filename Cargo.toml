@@ -9,6 +9,7 @@ members = [
     "keel-data",
     "keel-bench",
     "keel-ingest",
+    "keel-ui",
 ]
 
 [workspace.package]

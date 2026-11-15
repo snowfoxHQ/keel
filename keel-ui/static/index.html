@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Keel 回测工作台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>Keel 回测工作台</h1>
+  <span class="sub">确定性回测引擎 · 同样数据跑一万遍结果完全一致</span>
+</header>
+<main>
+  <aside id="panel">
+    <section>
+      <h2>1 · 行情数据</h2>
+      <label class="btn"><input type="radio" name="source" value="builtin" checked> 用内置样本（贵州茅台 2025 上半年日线）</label>
+      <label class="btn"><input type="radio" name="source" value="file"> 用自己的数据（黄金 CSV 文件）</label>
+      <input type="file" id="file" accept=".csv" disabled>
+      <p class="hint">自己的数据请先用 keel-ingest 清洗为黄金 CSV（ts,open,high,low,close,volume 六列）</p>
+    </section>
+    <section>
+      <h2>2 · 策略</h2>
+      <select id="strategy">
+        <option value="day_cycle" selected>周期买卖：买入 100 股，持有 N 天后卖出，循环</option>
+        <option value="buy_hold">一次全仓买入，一直持有</option>
+        <option value="ma_cross">均线交叉：短期均线上穿长期线买入，下穿卖出</option>
+      </select>
+      <div id="param_day" class="params">
+        <label>持有天数 <input type="number" id="hold_days" value="5" min="1"></label>
+      </div>
+      <div id="param_ma" class="params hidden">
+        <label>短期均线（天）<input type="number" id="fast" value="5" min="2"></label>
+        <label>长期均线（天）<input type="number" id="slow" value="20" min="3"></label>
+      </div>
+    </section>
+    <section>
+      <h2>3 · 资金与费用</h2>
+      <label>初始资金（元）<input type="number" id="cash_yuan" value="1000000" step="10000"></label>
+      <label>佣金（万分比，0.03% 填 3）<input type="number" id="commission_bp" value="3" min="0"></label>
+      <label>印花税（万分比，1% 填 100，仅卖出）<input type="number" id="stamp_bp" value="100" min="0"></label>
+      <label>过户费（万分比）<input type="number" id="transfer_bp" value="1" min="0"></label>
+      <label>滑点（分，每笔买卖多亏的钱）<input type="number" id="slippage_cents" value="1" min="0"></label>
+      <label>止损价（元，可选，留空不止损）<input type="text" id="stop_yuan" placeholder="例如 9.50"></label>
+    </section>
+    <button id="run">开始回测</button>
+    <div id="error" class="hidden"></div>
+  </aside>
+  <section id="result" class="hidden">
+    <div id="cards"></div>
+    <h2>资金曲线（蓝）与收盘价（灰）</h2>
+    <canvas id="chart" width="860" height="340"></canvas>
+    <h2>成交明细</h2>
+    <table id="trades"><thead><tr><th>#</th><th>日期</th><th>方向</th><th>成交价</th><th>股数</th><th>费用</th><th>资金变动</th></tr></thead><tbody></tbody></table>
+    <p id="fingerprint"></p>
+  </section>
+  <section id="welcome">
+    <h2>怎么用</h2>
+    <ol>
+      <li>选一份行情数据（内置样本可以直接跑）</li>
+      <li>挑一个策略，设好资金和费用</li>
+      <li>点"开始回测"</li>
+    </ol>
+    <p>所有计算在本地完成，数据不会离开这台电脑。</p>
+  </section>
+</main>
+<script src="app.js"></script>
+</body>
+</html>

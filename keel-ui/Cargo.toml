@@ -1,0 +1,12 @@
+[package]
+name = "keel-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+keel-core = { path = "../keel-core" }
+keel-data = { path = "../keel-data" }
+keel-engine = { path = "../keel-engine" }
+keel-guard = { path = "../keel-guard" }
+keel-pnl = { path = "../keel-pnl" }
