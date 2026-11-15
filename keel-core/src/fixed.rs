@@ -200,6 +200,15 @@ define_fixed!(
 );
 
 impl Money {
+    /// 零值。
+    pub const ZERO: Money = Money(0);
+
+    /// 取负（现金流出方向标记用；不溢出——i128 负界比正界宽 1）。
+    #[inline]
+    pub const fn neg(self) -> Self {
+        Money(-self.0)
+    }
+
     /// 价格 × 数量 → 金额，指定舍入方向（§4.3：买方向上、卖方向下）。
     #[inline]
     pub fn price_qty(p: Price, q: Qty, round: Round) -> Result<Money, FixedError> {

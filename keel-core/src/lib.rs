@@ -5,6 +5,11 @@ pub mod event;
 pub mod fixed;
 pub mod pool;
 
+/// 哈希算法统一出口（§13/§14：golden 哈希算法全局唯一，固定 XXH3-64）。
+pub mod hash {
+    pub use xxhash_rust::xxh3::{xxh3_64, Xxh3};
+}
+
 pub use event::{Event, EventKey, EventQueue, Phase, QueueError};
-pub use fixed::{Money, Price, Qty, RAW_BOUND};
+pub use fixed::{Money, Price, Qty, Rate, RAW_BOUND};
 pub use pool::{Arena, Handle, Pool, PoolError};
