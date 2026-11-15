@@ -184,6 +184,18 @@ define_fixed!(
     RAW_BOUND,
     "数量，i64 定点，单位 1e-8（原始量 ×10⁸）。"
 );
+
+impl Qty {
+    /// 统计专用构造：豁免 §4.2 撮合边界（2^44）。
+    ///
+    /// 仅用于**不参与乘法/撮合/核算**的量（当前唯一场景：Bar 成交量，v0 撮合
+    /// 全成全不成、不用 volume 截断）。进撮合的下单数量一律 `from_raw` /
+    /// `checked_from_raw`。raw 值域即 i64 自然界（调用方解析层 checked 保证）。
+    #[inline]
+    pub const fn from_raw_stat(raw: i64) -> Self {
+        Self(raw)
+    }
+}
 define_fixed!(
     Rate,
     i64,

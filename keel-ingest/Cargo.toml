@@ -1,0 +1,13 @@
+[package]
+name = "keel-ingest"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+keel-core = { path = "../keel-core" }
+keel-data = { path = "../keel-data" }
+
+[[bin]]
+name = "keel-ingest"
+path = "src/main.rs"

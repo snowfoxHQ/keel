@@ -1,0 +1,124 @@
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use keel_data::parse_bars_csv;
+
+    const HEAD: &str = "ts_code,trade_date,open,high,low,close,vol,amount";
+
+    #[test]
+    fn clean_row_clean_data_passes() {
+        let src = format!(
+            "{HEAD}\n600519.SH,20260105,1234.56,1240.00,1230.10,1238.45,12345,1520000000\n"
+        );
+        let (golden, rep) = clean_daily_csv(&src, SnapMode::Strict).unwrap();
+        assert_eq!((rep.ok_rows, rep.snap_rows, rep.skipped_rows), (1, 0, 0));
+        let bars = parse_bars_csv(&golden).unwrap();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].ts, 20260105);
+        assert_eq!(bars[0].open.raw(), 12_345_600); // 1234.56 → 1e-4
+        assert_eq!(bars[0].volume.raw(), 1_234_500i64 * 100_000_000); // 12345 手 → 1234500 股
+        assert_eq!(golden.lines().count(), 2); // 表头 + 1 行（amount 不进）
+    }
+
+    #[test]
+    fn float_pollution_strict_rejects_row() {
+        let src = format!(
+            "{HEAD}\n600519.SH,20260105,10.00,11.00,9.50,10.50,100,1\n600519.SH,20260106,1234.5600001,1240.00,1230.10,1238.45,100,1\n"
+        );
+        let (_, rep) = clean_daily_csv(&src, SnapMode::Strict).unwrap();
+        assert_eq!(rep.skipped_rows, 1);
+        assert!(matches!(rep.actions[1].1, RowAction::Skip { .. }));
+    }
+
+    #[test]
+    fn float_pollution_snap_rounds_up() {
+        // 第 3 位 7 ≥ 5 → 进位：1234.567 → 1234.57
+        let src = format!("{HEAD}\n600519.SH,20260105,1234.567,1240.00,1230.10,1238.45,12345,1\n");
+        let (golden, rep) = clean_daily_csv(&src, SnapMode::Snap).unwrap();
+        assert_eq!(rep.snap_rows, 1);
+        let bars = parse_bars_csv(&golden).unwrap();
+        assert_eq!(bars[0].open.raw(), 12_345_700);
+        match &rep.actions[1].1 {
+            RowAction::Snap { field, from, to } => {
+                assert_eq!((field, from.as_str(), to.as_str()), ("open", "1234.567", "1234.57"));
+            }
+            other => panic!("期望 Snap，得到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn snap_down_rounding_below_five() {
+        // 第 3 位 2 < 5 → 舍去
+        let src = format!("{HEAD}\n600519.SH,20260105,1234.562,1240.00,1230.10,1238.45,12345,1\n");
+        let (golden, rep) = clean_daily_csv(&src, SnapMode::Snap).unwrap();
+        assert_eq!(rep.snap_rows, 1);
+        let bars = parse_bars_csv(&golden).unwrap();
+        assert_eq!(bars[0].open.raw(), 12_345_600);
+    }
+
+    #[test]
+    fn snap_breaking_ohlc_consistency_skips_row() {
+        // low 1230.109 → snap 1230.11 > open 1230.10 → 自洽破坏 → SKIP
+        let src = format!("{HEAD}\n600519.SH,20260105,1230.10,1240.00,1230.109,1238.45,12345,1\n");
+        let (_, rep) = clean_daily_csv(&src, SnapMode::Snap).unwrap();
+        assert_eq!(rep.skipped_rows, 1);
+    }
+
+    #[test]
+    fn suspended_day_gap_recorded() {
+        let src = format!(
+            "{HEAD}\n600519.SH,20260105,10.00,11.00,9.50,10.50,100,1\n600519.SH,20260107,10.50,11.00,10.00,10.80,100,1\n"
+        );
+        let (_, rep) = clean_daily_csv(&src, SnapMode::Strict).unwrap();
+        assert_eq!(rep.gaps, vec![DateGap { from: 20260105, to: 20260107 }]);
+    }
+
+    #[test]
+    fn malformed_rows_skip_independently() {
+        let src = format!(
+            "{HEAD}\n600519.SH,20260105,10.00,11.00,9.50,10.50,100,1\n600519.SH,20260106,10.5,11,10,10.8\n600519.SH,20260107,x,11.00,10.00,10.80,100,1\n600519.SH,20260108,10.80,11.00,10.50,10.90,100,1\n"
+        );
+        let (golden, rep) = clean_daily_csv(&src, SnapMode::Strict).unwrap();
+        assert_eq!(rep.skipped_rows, 2); // 列数 7 + 非法数字
+        let bars = parse_bars_csv(&golden).unwrap();
+        assert_eq!(bars.len(), 2);
+        assert_eq!(bars[1].ts, 20260108);
+    }
+
+    #[test]
+    fn bad_header_rejected() {
+        assert_eq!(
+            clean_daily_csv("a,b,c\n1,2,3\n", SnapMode::Strict),
+            Err(IngestError::Header)
+        );
+    }
+
+    #[test]
+    fn all_rows_skipped_is_empty() {
+        let src = format!("{HEAD}\n600519.SH,20260105,x,y,z,w,1,1\n");
+        assert_eq!(
+            clean_daily_csv(&src, SnapMode::Strict),
+            Err(IngestError::Empty)
+        );
+    }
+
+    #[test]
+    fn trailing_zero_fractions_are_exact_not_snap() {
+        // "10.500" 第 3 位为 0 → 精确 10.50，不 SNAP
+        let src = format!("{HEAD}\n600519.SH,20260105,10.500,11.00,9.50,10.50,100,1\n");
+        let (_, rep) = clean_daily_csv(&src, SnapMode::Strict).unwrap();
+        assert_eq!((rep.ok_rows, rep.snap_rows), (1, 0));
+    }
+
+    #[test]
+    fn multi_field_snap_single_log_entry() {
+        // open 与 close 同时被归位 → 1 行 Snap 记录（首字段为代表）
+        let src = format!("{HEAD}\n600519.SH,20260105,10.005,11.00,9.50,10.505,100,1\n");
+        let (_, rep) = clean_daily_csv(&src, SnapMode::Snap).unwrap();
+        assert_eq!(rep.snap_rows, 1);
+        match &rep.actions[1].1 {
+            RowAction::Snap { field, .. } => assert_eq!(*field, "open"),
+            other => panic!("期望 Snap，得到 {other:?}"),
+        }
+    }
+}

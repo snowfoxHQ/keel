@@ -54,6 +54,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "keel-ingest"
+version = "0.2.0"
+dependencies = [
+ "keel-core",
+ "keel-data",
+]
+
+[[package]]
 name = "keel-pnl"
 version = "0.2.0"
 dependencies = [

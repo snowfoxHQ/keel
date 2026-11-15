@@ -89,7 +89,7 @@ fn parse_bar_line(line: &str, line_no: usize) -> Result<Bar, DataError> {
     let high = parse_price(cols[2], line_no)?;
     let low = parse_price(cols[3], line_no)?;
     let close = parse_price(cols[4], line_no)?;
-    let volume = parse_qty(cols[5], line_no)?;
+    let volume = parse_volume(cols[5], line_no)?;
 
     // OHLC 自洽性（§6.1 数据前提；异常行在接入层拒绝，不进撮合）
     let hi = open.raw().max(close.raw()).max(high.raw());
@@ -116,13 +116,24 @@ fn parse_price(s: &str, line_no: usize) -> Result<Price, DataError> {
     Ok(Price::from_raw(raw))
 }
 
-/// 十进制定点解析（数量，1e-8）。
+/// 十进制定点解析（数量，1e-8）。进撮合的数量适用 §4.2 撮合边界（2^44）。
 fn parse_qty(s: &str, line_no: usize) -> Result<Qty, DataError> {
     let raw = parse_scaled(s, 8, line_no)?;
     if raw.abs() >= RAW_BOUND {
         return Err(DataError::OutOfBounds(line_no));
     }
     Ok(Qty::from_raw(raw))
+}
+
+/// 十进制定点解析（Bar 成交量，1e-8，仅统计）。
+///
+/// **豁免 §4.2 撮合边界**：volume 不参与任何乘法/撮合/核算（v0 撮合全成全不成，
+/// 不用 volume 截断），2^44 边界仅为 price×qty 的 i128 乘法安全服务；对只统计的
+/// volume 照搬会拒绝几乎所有真实日线（数万手 = 数百万股 → raw > 2^44）。
+/// 约束放宽为 i64 自然界（parse_scaled 内部 checked_mul 保证）。
+fn parse_volume(s: &str, line_no: usize) -> Result<Qty, DataError> {
+    let raw = parse_scaled(s, 8, line_no)?;
+    Ok(Qty::from_raw_stat(raw))
 }
 
 /// `"12.34"` → `1234 × 10^(scale-2)`；小数位超 scale 返回 None。
