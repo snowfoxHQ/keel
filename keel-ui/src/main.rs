@@ -24,7 +24,16 @@ const STYLE_CSS: &str = include_str!("../static/style.css");
 
 fn main() {
     let addr = "127.0.0.1:8787";
-    let listener = TcpListener::bind(addr).expect("启动失败：8787 端口被占用（可能已有一个 keel-ui 在跑）");
+    let listener = match TcpListener::bind(addr) {
+        Ok(l) => l,
+        Err(_) => {
+            eprintln!("启动失败：8787 端口已被占用。");
+            eprintln!("最常见原因：之前已经启动过一个 keel-ui 还在运行——");
+            eprintln!("  直接用浏览器打开 http://127.0.0.1:8787 就能用，无需重复启动；");
+            eprintln!("  或者打开任务管理器，结束名为 keel-ui 的进程后重新运行本命令。");
+            return;
+        }
+    };
     println!("==============================================");
     println!("  Keel 回测工作台已启动");
     println!("  请用浏览器打开:  http://{addr}");
