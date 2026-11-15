@@ -180,7 +180,7 @@ bt.register_guard(RuleSpec {
 
 ---
 
-以下为**开发者进阶**内容（写代码、改数据、交付复现前必读）。设计原则的唯一权威是 `docs/BASELINE.md`，关键决策记录在 `docs/ADR/`。
+以下为**开发者进阶**内容（写代码、改数据、交付复现前必读）。
 
 ## 数据接入
 
@@ -201,7 +201,7 @@ cargo run -p keel-ingest -- src.csv golden.csv --snap   # snap：四舍五入归
 
 golden 回归位于 `keel-engine/tests/golden.rs`，五项全自动化：①事件流累计哈希 ②快照锚点 ③首个差异定位 ④最终核算精确值 ⑤跨运行逐位一致。数据集哈希清单（`dataset_manifest_matches`）用 XXH3-64 逐字节锚定全部数据集，任何字节级改动（含行尾 CRLF 混入）都会失配。
 
-复现流程（详见 `docs/A2-复现包.md`）：clone → `cargo test --workspace` 绿 → `cargo run --release -p keel-bench`。注意 `.gitattributes` 强制数据/文本文件 LF——复现的字节级前提。锚值变更协议：合法变更（数据集更新、语义修订）须跑测试取新锚、更新常量、commit message 注明"重新生成 golden"。
+复现流程：clone → `cargo test --workspace` 绿 → `cargo run --release -p keel-bench`。注意 `.gitattributes` 强制数据/文本文件 LF——复现的字节级前提。锚值变更协议：合法变更（数据集更新、语义修订）须跑测试取新锚、更新常量、commit message 注明"重新生成 golden"。
 
 ## 确定性红线（改内核代码前必读）
 
