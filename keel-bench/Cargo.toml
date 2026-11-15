@@ -9,7 +9,9 @@ keel-core = { path = "../keel-core" }
 keel-book = { path = "../keel-book" }
 keel-pnl = { path = "../keel-pnl" }
 keel-guard = { path = "../keel-guard" }
+keel-data = { path = "../keel-data" }
+keel-engine = { path = "../keel-engine" }
 
 [[bin]]
-name = "keel-bench-l1"
+name = "keel-bench"
 path = "src/main.rs"

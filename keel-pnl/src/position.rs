@@ -66,11 +66,23 @@ pub trait CostMethod {
     fn held_cost(&self) -> Money;
 }
 
-/// FIFO 成本算法：独立批次队列，先开先平。
+/// FIFO 成本算法：环形批次队列（固定容量复用，零分配）。
+///
+/// `head` 为队首逻辑游标（环形下标），`count` 为未消费批次数。
+/// 满载判定 `count == cap`（并发未消费批次超容量，§7 池化复用语义）。
+/// 历史：v0.3 前用 `Vec + head 前缀压缩`——`truncate(head)` 语义错误（删除未消费
+/// 批次，P5 golden 抓出），改为 `drain(..head)` 后语义正确但前缀移除是 O(len)
+/// memmove，批次积累场景（净持仓单调增长）性能崩塌（54µs/次）；P6 改环形，push/
+/// release 均 O(1)。**教训：池化复用必须用环形游标，不能反复做前缀搬移。**
 pub struct FifoCost {
-    /// 批次 (数量幅值, 成本)；head 为队首游标。
-    batches: Vec<(i128, Money)>,
+    /// 环形批次槽位 (数量幅值, 成本)。
+    ring: Vec<(i128, Money)>,
+    /// 环形容量（并发未消费批次上限）。
+    cap: usize,
+    /// 队首逻辑下标（最旧未消费批次）。
     head: usize,
+    /// 未消费批次数。
+    count: usize,
     held: i128,
     total: Money,
 }
@@ -78,8 +90,11 @@ pub struct FifoCost {
 impl FifoCost {
     pub fn new(batch_capacity: usize) -> Self {
         FifoCost {
-            batches: Vec::with_capacity(batch_capacity),
+            // 一次分配填满槽位（此后物理容量不变，§7 零分配契约）
+            ring: vec![(0, Money::ZERO); batch_capacity],
+            cap: batch_capacity,
             head: 0,
+            count: 0,
             held: 0,
             total: Money::ZERO,
         }
@@ -91,16 +106,13 @@ impl CostMethod for FifoCost {
         if qty_raw <= 0 {
             return Ok(());
         }
-        // 移除队首已耗尽批次（drain 前缀，而非 truncate 保留——head==len 时
-        // truncate 是 no-op，会复活已消费批次导致后续释放成本错批）
-        if self.head > 0 {
-            self.batches.drain(..self.head);
-            self.head = 0;
-        }
-        if self.batches.len() >= self.batches.capacity() {
+        if self.count == self.cap {
             return Err(PnlError::BatchFull);
         }
-        self.batches.push((qty_raw, gross));
+        // 写入队尾槽位（环形：复用已消费槽位，物理容量不变，§7）
+        let tail = (self.head + self.count) % self.cap;
+        self.ring[tail] = (qty_raw, gross);
+        self.count += 1;
         self.held += qty_raw;
         self.total = self
             .total
@@ -117,20 +129,20 @@ impl CostMethod for FifoCost {
         let mut need = qty_raw;
         let mut released = Money::ZERO;
         while need > 0 {
-            let (bq, bcost) = self.batches[self.head];
+            let (bq, bcost) = self.ring[self.head];
             let take = if bq <= need { bq } else { need };
             let part = if take == bq {
-                // 清零笔：吃掉该批次全部成本（精确相等）
+                // 清零笔：吃掉该批次全部成本（精确相等）；槽位留待队尾复用
+                self.head = (self.head + 1) % self.cap;
+                self.count -= 1;
                 bcost
             } else {
                 // 部分消费：trunc 摊分，余数留在批次内
                 trunc_part(bcost, take, bq)
             };
             released = released.checked_add(part).map_err(|_| PnlError::Overflow)?;
-            if take == bq {
-                self.head += 1;
-            } else {
-                self.batches[self.head] = (
+            if take != bq {
+                self.ring[self.head] = (
                     bq - take,
                     bcost
                         .checked_sub(part)

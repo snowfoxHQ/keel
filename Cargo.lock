@@ -8,6 +8,8 @@ version = "0.2.0"
 dependencies = [
  "keel-book",
  "keel-core",
+ "keel-data",
+ "keel-engine",
  "keel-guard",
  "keel-pnl",
 ]
