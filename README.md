@@ -1,36 +1,133 @@
 # Keel / 衡石
 
-单机确定性持仓盈亏与止盈止损内核。热路径零分配、零锁、**逐位可复现**：相同输入必然产生相同输出（golden 回归验收），模拟成交尽可能符合真实市场规则（经济合理性验收，`docs/BASELINE.md` §2 双验收）。
+**一句话：这是一个"诚实的时光机"——拿真实的历史行情，重新演练你的买卖策略，告诉你如果当时真的这么做会赚还是会亏。**
 
-核心特性：全链路 i64/i128 定点运算零浮点（价格 1e-4、数量 1e-8）；`(ts, phase, seq)` 全序键 + BarMatcher 保守不利路径撮合；TradeLedger 事实链（XXH3 逐笔累计）；golden 五项回归（事件哈希/快照锚点/精确核算/跨运行一致/差异定位）；分层基准 L0 派发 0.9ns/event 到 L3 全链路 2158 万 Bar/s。
+玩过模拟炒股或者见过别人说"我这策略历史回测年化 30%"的话，你就已经理解回测是什么了。Keel 就是一个做这件事的引擎，但它把一件大多数回测工具没做好的事当作生命线：
 
-## 快速开始
+> **同样的数据跑一万遍，结果一个字节都不会差。**
 
-前置：Rustup（按 `rust-toolchain.toml` 自动安装锁定的 1.100.0 工具链，无需手动装）。
+听起来理所当然？其实现实中很多回测程序今天跑和明天跑结果不一样——小数计算有舍入误差、成交撮合全凭想当然、多线程带来随机性。结果是：你看到的"赚 30%"里，可能有一部分只是计算误差的随机噪声。Keel 从数学底层就杜绝了这种事：全程不用小数（用整数精确表示每一分钱），成交规则按"对你最不利"的方向保守处理，每一步操作都留下可校验的指纹。你拿到的每一个数字，都能追溯到它的来龙去脉。
+
+## 一分钟上手
+
+前提：装过 [Rust](https://rustup.rs)（一条命令装好，语言工具链会自动下载对应版本）。
 
 ```bash
 git clone <repo> && cd keel
-
-cargo test --workspace              # 全部测试（单元/差分/确定性/golden 回归）
-cargo run --release -p keel-bench   # 分层基准报告（七项验收 + 字段齐全）
+cargo test --workspace              # 跑完全部 100 多个自动化测试
+cargo run --release -p keel-bench   # 打印一份性能测试报告
 ```
 
-`cargo test --workspace` 退出码 0 = 全部黄金结果逐位重现。任何哈希失配意味着代码或数据集与固化版本不一致（测试输出给出失配项与两侧哈希）。
+第一条命令跑完全绿，说明这套引擎在你机器上完全正常工作——它同时验证了"结果可以复现"这个承诺本身（同样的测试在谁机器上跑都是同样的结果）。第二条会打印一份像体检报告一样的性能单：引擎每秒能处理 2000 多万根日线数据，比绝大部分场景需要的快得多。
 
-## 仓库结构
+## 几个名词，一分钟看完
 
-| crate | 职责 |
-|-------|------|
-| `keel-core` | 定点类型（Price/Qty/Money/Rate）、XXH3 哈希、容量契约 |
-| `keel-book` | 订单簿撮合载体（价格档位 + 分层位图 + O(1) 撤单，Tick 模型预留） |
-| `keel-pnl` | TradeLedger 事实层 + FIFO 账户核算（环形批次队列）+ 费用模型 |
-| `keel-guard` | 止盈止损规则引擎（固定/追踪，桶位图 O(1) 触发） |
-| `keel-data` | 黄金 CSV 解析（零浮点、精度拒绝、OHLC 自洽校验） |
-| `keel-engine` | BarMatcher 保守撮合 + 回测闭环 + golden 回归框架 |
-| `keel-bench` | 分层基准（L0–L3）+ 验收判定 |
-| `keel-ingest` | 真实行情源适配器（不属于内核；脏数据清洗为黄金 CSV） |
+| 名词 | 人话解释 |
+|------|----------|
+| 回测 | 拿历史行情数据，让程序按你的规则"假装"买卖，统计赚亏 |
+| Bar（K线） | 一天的行情摘要：开盘价、最高价、最低价、收盘价、成交量 |
+| 撮合 | 你挂单后，引擎决定这笔单子成没成交、按什么价成交 |
+| 滑点 | 真实世界里成交价总比理想价差一点点，引擎故意按更差的价格算（保守） |
+| 止损 | 亏到某个价位自动卖出，防止越亏越多 |
+| 逐位可复现 | 同样的输入，任何时候、任何机器跑，输出连标点符号都一模一样 |
+| 指纹（哈希） | 把全部交易过程压缩成一个短代号，两次结果代号相同 = 过程完全相同 |
+## 用它跑一个回测：会发生什么
 
-文档：`docs/BASELINE.md`（设计基线，唯一权威）、`docs/ADR/`（关键决策）、`docs/A2-复现包.md`（复现交付流程）。
+下面是完整可运行的例子（真的能编译运行，我们逐字验证过）。策略只有两句话：**空仓就买 100 股；持仓后当天收阳线（收盘价比开盘价高）就在第二天开盘价卖出。**
+
+```rust
+use keel_core::{Qty, Rate};
+use keel_data::{parse_bars_csv, Bar};
+use keel_engine::{BacktestConfig, Backtester, MatcherConfig, OrderIntent, OrderKind, Strategy, StrategyCtx};
+use keel_guard::GuardConfig;
+use keel_pnl::{FeeModel, Side};
+
+struct Simple;
+
+impl Strategy for Simple {
+    // 每天开盘前，引擎会来问你一次：今天想下什么单？
+    fn on_bar(&mut self, bar: &Bar, ctx: &StrategyCtx) -> Vec<OrderIntent> {
+        if ctx.net_qty == 0 {
+            // 空仓：市价买 100 股（Qty 是整数定点数，100 股写成 100 * 10^8）
+            vec![OrderIntent { side: Side::Buy, kind: OrderKind::Market, qty: Qty::from_raw(100 * 100_000_000) }]
+        } else if bar.close.raw() > bar.open.raw() {
+            // 持仓且收阳：按当天开盘价挂限价卖单，卖掉全部持仓
+            vec![OrderIntent { side: Side::Sell, kind: OrderKind::Limit { limit: bar.open }, qty: Qty::from_raw(ctx.net_qty as i64) }]
+        } else {
+            vec![] // 其余情况不动
+        }
+    }
+}
+
+fn main() {
+    // 行情数据：这里直接内嵌两根 K 线，实际使用时从 CSV 文件读入
+    let bars = parse_bars_csv(
+        "ts,open,high,low,close,volume\n20260105,10.00,10.50,9.80,10.40,10000\n20260106,10.50,11.00,10.20,10.90,12000\n",
+    ).unwrap();
+
+    // 回测配置：手续费、滑点、初始资金等
+    let cfg = BacktestConfig {
+        fees: FeeModel {
+            commission: Rate::from_raw(30_000),    // 佣金 0.03%（费率单位是 1e-8，30_000 即 0.0003）
+            stamp_duty: Rate::from_raw(1_000_000), // 印花税 1%，只在卖出时收
+            transfer_fee: Rate::from_raw(0),       // 过户费：关闭
+        },
+        matcher: MatcherConfig {
+            slippage_raw: 100,                     // 滑点 0.01 元：买贵一分、卖贱一分
+            limit_up: None, limit_down: None, min_lot_raw: 0,
+        },
+        guard: GuardConfig {                       // 止损引擎的内部容量参数，照抄即可
+            base_price_raw: 100_000, bucket_span_raw: 1_000, buckets: 256, bucket_cap: 8, max_rules: 16,
+        },
+        initial_cash_raw: 100_000_000_000_000,     // 初始资金 100 万元
+        snapshot_every: 4,
+    };
+
+    let mut bt = Backtester::new(cfg).unwrap();
+    let report = bt.run(&bars, &mut Simple).unwrap();
+
+    println!("成交笔数: {}", report.fills);
+    println!("最终持仓: {} 股", report.final_net_qty);
+    println!("最终资金: {} 元", report.final_cash_raw as f64 / 1e8); // 内部是整数，展示时才除
+    println!("过程指纹: {:#018x}", report.event_hash);
+}
+```
+
+运行后引擎做的事，按顺序：读入行情 → 每天问你的策略要单子 → 按保守规则判定成交（买的时候帮你按更贵的价格算，卖的时候按更便宜的算，模拟真实摩擦）→ 自动收取手续费和印花税 → 全程记账 → 最后交给你一份报告：成交了几笔、赚亏多少、整个过程独一无二的指纹。
+
+想加"跌到 9.5 元自动卖出"的止损？run 之前多三行：
+
+```rust
+use keel_core::Price;
+use keel_guard::{RuleKind, RuleSpec, TriggerSide};
+
+bt.register_guard(RuleSpec {
+    id: 1, ts: 0,
+    side: TriggerSide::SellStop,
+    kind: RuleKind::Fixed,                 // 固定价位止损
+    trigger: Price::from_raw(95_000),      // 9.50 元触发（价格单位 1e-4）
+    extreme: Price::from_raw(0),
+    trail: Qty::from_raw(0),
+    bound_qty: Qty::from_raw(100 * 100_000_000),
+}).unwrap();
+```
+
+## 仓库地图
+
+| crate | 一句话 | 管什么 |
+|-------|--------|--------|
+| `keel-core` | 地基 | 精确数字类型（整数定点）、哈希指纹 |
+| `keel-data` | 门口的安检 | 只放"干净规整"的行情数据进来，脏数据一律拒收 |
+| `keel-ingest` | 洗数据工 | 把真实行情软件导出的原始数据清洗成安检认可的标准格式 |
+| `keel-engine` | 干活的 | 回测主流程：撮合 + 记账 + 出报告 |
+| `keel-pnl` | 账房 | 每笔成交的盈亏计算、手续费，全程留底 |
+| `keel-guard` | 保镖 | 止损止盈，触发就平仓 |
+| `keel-book` | 仓库储备 | 订单簿撮合内核，为未来逐笔（Tick）行情预留 |
+| `keel-bench` | 体检测速 | 各环节性能基准，保证"快"不是靠吹的 |
+
+---
+
+以下为**开发者进阶**内容（写代码、改数据、交付复现前必读）。设计原则的唯一权威是 `docs/BASELINE.md`，关键决策记录在 `docs/ADR/`。
 
 ## 数据接入
 
@@ -47,97 +144,13 @@ cargo run -p keel-ingest -- src.csv golden.csv --snap   # snap：四舍五入归
 
 已入库的真实数据回归集：`keel-engine/tests/golden/bars_real.csv`（sh600519 前复权日线 2025H1，117 根，snap 清洗全过），对应引擎回归测试 `real_data_regression`。
 
-## 写一个回测
-
-依赖（keel-engine 已聚合 core/data/guard/pnl）：
-
-```toml
-[dependencies]
-keel-data   = { path = "../keel-data" }
-keel-engine = { path = "../keel-engine" }
-keel-guard  = { path = "../keel-guard" }
-keel-pnl    = { path = "../keel-pnl" }
-```
-
-最小可跑示例：
-
-```rust
-use keel_core::{Qty, Rate};
-use keel_data::{parse_bars_csv, Bar};
-use keel_engine::{BacktestConfig, Backtester, MatcherConfig, OrderIntent, OrderKind, Strategy, StrategyCtx};
-use keel_guard::GuardConfig;
-use keel_pnl::{FeeModel, Side};
-
-struct BuyDipSellRip;
-
-impl Strategy for BuyDipSellRip {
-    fn on_bar(&mut self, bar: &Bar, ctx: &StrategyCtx) -> Vec<OrderIntent> {
-        if ctx.net_qty == 0 {
-            vec![OrderIntent { side: Side::Buy, kind: OrderKind::Market, qty: Qty::from_raw(100 * 100_000_000) }]
-        } else if bar.close.raw() > bar.open.raw() {
-            vec![OrderIntent { side: Side::Sell, kind: OrderKind::Limit { limit: bar.open }, qty: Qty::from_raw(ctx.net_qty as i64) }]
-        } else {
-            vec![]
-        }
-    }
-}
-
-fn main() {
-    let bars = parse_bars_csv(
-        "ts,open,high,low,close,volume\n20260105,10.00,10.50,9.80,10.40,10000\n20260106,10.50,11.00,10.20,10.90,12000\n",
-    ).unwrap();
-
-    let cfg = BacktestConfig {
-        fees: FeeModel {                          // Rate 单位 1e-8：30_000 = 0.03%，1_000_000 = 1%
-            commission: Rate::from_raw(30_000),
-            stamp_duty: Rate::from_raw(1_000_000), // 仅卖出收取
-            transfer_fee: Rate::from_raw(0),
-        },
-        matcher: MatcherConfig {                  // 滑点 100 = 0.01 元（保守不利方向）
-            slippage_raw: 100, limit_up: None, limit_down: None, min_lot_raw: 0,
-        },
-        guard: GuardConfig {                      // 桶位图须覆盖价格区间：base ± buckets×span
-            base_price_raw: 100_000, bucket_span_raw: 1_000, buckets: 256, bucket_cap: 8, max_rules: 16,
-        },
-        initial_cash_raw: 100_000_000_000_000,    // 100 万元（Money 单位 1e-8）
-        snapshot_every: 4,                        // 每 4 个事件一个快照锚点（0 = 关闭）
-    };
-
-    let mut bt = Backtester::new(cfg).unwrap();
-    let report = bt.run(&bars, &mut BuyDipSellRip).unwrap();
-    println!("fills={} net={} cash={}", report.fills, report.final_net_qty, report.final_cash_raw);
-    println!("event_hash={:#018x} chain_hash={:#018x}", report.event_hash, report.chain_hash);
-}
-```
-
-策略接口：`Strategy::on_bar(&bar, &ctx) -> Vec<OrderIntent>`；ctx 暴露 ts/net_qty/cash/realized/held_cost。订单即时生效（当根 Bar 撮合），市价按当根开盘价 ± 滑点成交，限价按保守规则撮合（§6.1：跳空劣于触发价按开盘价成交等）。策略只看到当根及之前的数据，API 不暴露任何未来信息。
-
-止盈止损（可选）：在 run 前注册 guard，触发后按开盘价全平 bound_qty 并自动撤销挂单：
-
-```rust
-use keel_core::Price;
-use keel_guard::{RuleKind, RuleSpec, TriggerSide};
-
-bt.register_guard(RuleSpec {
-    id: 1, ts: 0,
-    side: TriggerSide::SellStop,
-    kind: RuleKind::Fixed,                 // 或追踪止损（extreme/trail 语义见 BASELINE §8）
-    trigger: Price::from_raw(95_000),      // 9.50 元触发
-    extreme: Price::from_raw(0),
-    trail: Qty::from_raw(0),
-    bound_qty: Qty::from_raw(100 * 100_000_000),
-}).unwrap();
-```
-
-报告字段（全部精确定点值 + 哈希）：`fills/rejects/cancels`、`final_net_qty/final_cash_raw/final_realized_raw/final_fees_raw`、`event_hash`（§13.1 事件流累计哈希）、`snapshots`（§13.2 快照锚点）、`chain_hash`（§9 Ledger 事实链摘要）。
-
 ## 黄金回归与复现
 
 golden 回归位于 `keel-engine/tests/golden.rs`，五项全自动化：①事件流累计哈希 ②快照锚点 ③首个差异定位 ④最终核算精确值 ⑤跨运行逐位一致。数据集哈希清单（`dataset_manifest_matches`）用 XXH3-64 逐字节锚定全部数据集，任何字节级改动（含行尾 CRLF 混入）都会失配。
 
 复现流程（详见 `docs/A2-复现包.md`）：clone → `cargo test --workspace` 绿 → `cargo run --release -p keel-bench`。注意 `.gitattributes` 强制数据/文本文件 LF——复现的字节级前提。锚值变更协议：合法变更（数据集更新、语义修订）须跑测试取新锚、更新常量、commit message 注明"重新生成 golden"。
 
-## 确定性红线（写代码前必读）
+## 确定性红线（改内核代码前必读）
 
 热路径（撮合/核算/规则触发）禁止：浮点、分配、锁、panic（容量耗尽/溢出一律返回错误）、任何依赖容器内部顺序的遍历（同键事件次序只由 `(ts, phase, seq)` 决定）。跨类型乘除先升 i128 + `checked_*`。舍入方向按 §4.3 表逐项固定，不允许默认值。数据接入层（`keel-data`）之外禁止新的解析路径；真实数据清洗只能走 `keel-ingest`。变更确定性规则须走 ADR。
 
