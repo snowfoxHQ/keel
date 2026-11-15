@@ -7,3 +7,5 @@ rust-version.workspace = true
 [dependencies]
 keel-core = { path = "../keel-core" }
 keel-data = { path = "../keel-data" }
+keel-pnl = { path = "../keel-pnl" }
+keel-guard = { path = "../keel-guard" }

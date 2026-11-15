@@ -39,6 +39,8 @@ version = "0.2.0"
 dependencies = [
  "keel-core",
  "keel-data",
+ "keel-guard",
+ "keel-pnl",
 ]
 
 [[package]]
