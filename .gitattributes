@@ -1,0 +1,5 @@
+# 字节级可复现前提：数据集与文本配置一律 LF，禁止 git 平台自动转换。
+# CRLF 混入会改变 include_str! 读到的字节，破坏 XXH3 哈希锚（§13 逐位可复现）。
+*.csv text eol=lf
+*.toml text eol=lf
+*.md text eol=lf

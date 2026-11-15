@@ -190,6 +190,37 @@ fn real_data_deterministic() {
     assert_eq!(a.fills, b.fills);
 }
 
+// ---- P7-c：A2 复现包——数据集哈希清单（§13：大数据集生成器 + 哈希清单） ----
+//
+// 数据集逐字节锚定（XXH3-64，算法与事件流哈希同源）。任何字节改动（含行尾
+// CRLF 混入、编辑器尾空格）都会使清单失配——这是"复现包内容未被动过"的机器可验断言。
+// .gitattributes 已强制 *.csv eol=lf，保证跨平台 checkout 字节一致。
+
+/// 数据集清单：文件名 → XXH3-64（2026-11-15 P7-c 首次固化）。
+const DATASET_MANIFEST: &[(&str, u64)] = &[
+    // 12-bar 合成黄金数据集（P5-d）
+    ("golden/bars.csv", 0xe6d6_710e_9f96_d1e5),
+    // sh600519 前复权日线 2025H1，117 根（P7-b 真实数据回归集）
+    ("golden/bars_real.csv", 0x2956_66b8_b085_0008),
+];
+
+#[test]
+fn dataset_manifest_matches() {
+    let mut mismatches: Vec<String> = Vec::new();
+    for (path, expected) in DATASET_MANIFEST {
+        let bytes: &str = match *path {
+            "golden/bars.csv" => include_str!("golden/bars.csv"),
+            "golden/bars_real.csv" => include_str!("golden/bars_real.csv"),
+            other => panic!("清单中出现未知数据集 {other}"),
+        };
+        let h = keel_core::hash::xxh3_64(bytes.as_bytes());
+        if h != *expected {
+            mismatches.push(format!("{path}: 实际 {h:#018x} 清单 {expected:#018x}"));
+        }
+    }
+    assert!(mismatches.is_empty(), "数据集清单失配：\n{}", mismatches.join("\n"));
+}
+
 /// §13.1/2/4：端到端语义断言（成交数、持仓路径、快照锚点）。
 #[test]
 fn pipeline_semantics() {
