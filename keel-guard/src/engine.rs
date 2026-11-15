@@ -42,6 +42,8 @@ pub struct GuardEngine {
     cancels: Vec<CancelRecord>,
     /// 桶扫描候选暂存（复用）。
     cand: Vec<u32>,
+    /// 池遍历暂存（复用；热路径禁止分配）。
+    tmp: Vec<u32>,
 }
 
 impl GuardEngine {
@@ -59,6 +61,7 @@ impl GuardEngine {
             fired: Vec::with_capacity(cfg.max_rules),
             cancels: Vec::with_capacity(cfg.max_rules),
             cand: Vec::with_capacity(cfg.bucket_cap.max(64)),
+            tmp: Vec::with_capacity(cfg.max_rules),
         })
     }
 
@@ -192,13 +195,13 @@ impl GuardEngine {
     pub fn on_fill(&mut self, position_qty: Qty) -> Result<&[CancelRecord], GuardError> {
         let q = position_qty.raw() as i128;
         self.cancels.clear();
-        let slots: Vec<RuleHandle> = self.pool.iter().map(|(h, _)| h).collect();
-        for h in slots {
+        for si in 0..self.pool.capacity() {
+            let h = RuleHandle(si as u32);
             let gone = q == 0; // 数量为 0 即撤销（§8.1）
-            let (id, seq, side, trigger) = {
-                let r = self.pool.get(h).ok_or(GuardError::RuleGone)?;
-                (r.id, r.seq, r.side, r.trigger_raw)
+            let Some(r) = self.pool.get(h) else {
+                continue;
             };
+            let (id, seq, side, trigger) = (r.id, r.seq, r.side, r.trigger_raw);
             self.pool.get_mut(h).unwrap().bound_qty_raw = q;
             if gone {
                 self.index.remove(side, trigger, h.0);
@@ -216,12 +219,12 @@ impl GuardEngine {
     /// 持仓归零：绑定该持仓的全部 GuardRule 自动撤销（§8.1 CancelAck 语义）。
     pub fn on_position_closed(&mut self) -> Result<&[CancelRecord], GuardError> {
         self.cancels.clear();
-        let slots: Vec<RuleHandle> = self.pool.iter().map(|(h, _)| h).collect();
-        for h in slots {
-            let (id, seq, side, trigger) = {
-                let r = self.pool.get(h).ok_or(GuardError::RuleGone)?;
-                (r.id, r.seq, r.side, r.trigger_raw)
+        for si in 0..self.pool.capacity() {
+            let h = RuleHandle(si as u32);
+            let Some(r) = self.pool.get(h) else {
+                continue;
             };
+            let (id, seq, side, trigger) = (r.id, r.seq, r.side, r.trigger_raw);
             self.index.remove(side, trigger, h.0);
             self.pool.free_slot(h)?;
             self.cancels.push(CancelRecord {
@@ -236,12 +239,16 @@ impl GuardEngine {
     // ---- 内部 ----
 
     /// 跟踪止盈极值更新 + 触发价重排（Tick 路径）。
+    /// 按下标遍历槽位（free 只置 None 不移动内存，无需快照、零分配）。
     fn update_trailing(&mut self, p: i64) -> Result<(), GuardError> {
-        let slots: Vec<RuleHandle> = self.pool.iter().map(|(h, _)| h).collect();
-        for h in slots {
+        for si in 0..self.pool.capacity() {
+            let h = RuleHandle(si as u32);
             // 读写分离：块内读取，块外变更
             let (old_trigger, t128, side) = {
-                let r = self.pool.get(h).ok_or(GuardError::RuleGone)?;
+                let r = match self.pool.get(h) {
+                    Some(r) => r,
+                    None => continue,
+                };
                 if r.kind != RuleKind::Trailing {
                     continue;
                 }
@@ -271,10 +278,13 @@ impl GuardEngine {
 
     /// Bar 路径专用：只吸收极值（判定已在前面完成）。
     fn update_trailing_extremes(&mut self, high: i64, low: i64) -> Result<(), GuardError> {
-        let slots: Vec<RuleHandle> = self.pool.iter().map(|(h, _)| h).collect();
-        for h in slots {
+        for si in 0..self.pool.capacity() {
+            let h = RuleHandle(si as u32);
             let (old_trigger, t128, side, extreme) = {
-                let r = self.pool.get(h).ok_or(GuardError::RuleGone)?;
+                let r = match self.pool.get(h) {
+                    Some(r) => r,
+                    None => continue,
+                };
                 if r.kind != RuleKind::Trailing {
                     continue;
                 }

@@ -8,6 +8,7 @@ rust-version.workspace = true
 keel-core = { path = "../keel-core" }
 keel-book = { path = "../keel-book" }
 keel-pnl = { path = "../keel-pnl" }
+keel-guard = { path = "../keel-guard" }
 
 [[bin]]
 name = "keel-bench-l1"

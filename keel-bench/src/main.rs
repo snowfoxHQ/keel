@@ -159,6 +159,103 @@ fn main() {
     println!();
     println!("== L2 PnL 微基准（持仓状态机 + 成本算法，含费用计算） ==");
     bench_pnl();
+    println!();
+    println!("== L2 Guard 微基准（条件单阈值索引 + 触发判定，64 规则常驻） ==");
+    bench_guard();
+}
+
+/// L2 Guard：64 条混合规则（Fixed + Trailing）常驻，Bar 流驱动 on_bar。
+/// 触发后立即重注册同参数规则，保持负载恒定。
+fn bench_guard() {
+    use keel_guard::{GuardConfig, GuardEngine, RuleKind, RuleSpec, TriggerSide};
+
+    const N: usize = 200_000;
+    const RULES: usize = 64;
+    let mut g = GuardEngine::new(GuardConfig {
+        base_price_raw: 900_000,
+        bucket_span_raw: 1_000,
+        buckets: 512,
+        bucket_cap: 64,
+        max_rules: 256,
+    })
+    .unwrap();
+
+    let mut rng = Lcg(2026_11_16);
+    // 夹具：Bar 序列（价格区间 100.00 ± 2.50，波动远小于触发距离）
+    let mut bars: Vec<(i64, i64, i64)> = Vec::with_capacity(N);
+    for _ in 0..N {
+        let o = 1_000_000 + (rng.next() % 500) as i64;
+        let h = o + (rng.next() % 200) as i64;
+        let l = o - (rng.next() % 200) as i64;
+        bars.push((o, h, l));
+    }
+
+    // 注册 64 条规则：32 Fixed（触发价 90.00 / 88.00 交替，远离 Bar 区间）
+    // + 32 Trailing（步长 8.00，极值从 100.00 起，需涨 8 元才逼近）
+    let mut specs: Vec<RuleSpec> = Vec::with_capacity(RULES);
+    for i in 0..RULES {
+        let (side, kind, trigger, extreme, trail) = if i % 2 == 0 {
+            (
+                TriggerSide::SellStop,
+                RuleKind::Fixed,
+                900_000,
+                0,
+                0,
+            )
+        } else {
+            (
+                TriggerSide::SellStop,
+                RuleKind::Trailing,
+                0,
+                1_000_000,
+                80_000, // 8.00
+            )
+        };
+        specs.push(RuleSpec {
+            id: i as u64,
+            ts: 0,
+            side,
+            kind,
+            trigger: Price::from_raw(trigger),
+            extreme: Price::from_raw(extreme),
+            trail: Qty::from_raw(trail),
+            bound_qty: Qty::from_raw(100_000_000),
+        });
+    }
+    let mut handles: Vec<_> = specs.iter().map(|s| g.register(*s).unwrap()).collect();
+
+    let mut durs = Vec::with_capacity(N);
+    let mut fired_total = 0u64;
+    let t = Instant::now();
+    for (i, &(o, h, l)) in bars.iter().enumerate() {
+        let t0 = Instant::now();
+        let out = g.on_bar(Price::from_raw(o), Price::from_raw(h), Price::from_raw(l)).unwrap();
+        durs.push(t0.elapsed().as_nanos() as u64);
+        let fired: Vec<usize> = out.iter().map(|tr| tr.id as usize).collect();
+        if !fired.is_empty() {
+            // 触发即重注册（确定性：按 id 对齐）
+            fired_total += fired.len() as u64;
+            for &id in &fired {
+                handles[id] = g.register(specs[id]).unwrap();
+            }
+        }
+        let _ = i;
+    }
+    let total = t.elapsed();
+    let _ = &handles;
+
+    println!("  规则常驻={} 触发重注册={} 次", g.live_rules(), fired_total);
+    report("guard-on_bar(64规则/批)", &mut durs, total, N);
+    // §10 验收口径：单条规则状态更新 ns/次 = 整批中位数 ÷ 常驻规则数
+    // （on_bar 一次调用 = 64 条规则各一次极值检查/触发判定）
+    durs.sort_unstable();
+    let p50_batch = durs[durs.len() / 2] as f64;
+    println!(
+        "  guard 每规则状态更新 p50 ≈ {:.1} ns/规则（{} 规则摊薄，含 ~50ns/次计时开销）",
+        p50_batch / RULES as f64,
+        RULES
+    );
+    println!("验收线：guard ≤ 100 ns/次状态更新（单规则口径，§10 L2）");
 }
 
 fn bench_pnl() {
