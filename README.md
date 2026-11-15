@@ -31,6 +31,7 @@ cargo run --release -p keel-bench   # 打印一份性能测试报告
 | 止损 | 亏到某个价位自动卖出，防止越亏越多 |
 | 逐位可复现 | 同样的输入，任何时候、任何机器跑，输出连标点符号都一模一样 |
 | 指纹（哈希） | 把全部交易过程压缩成一个短代号，两次结果代号相同 = 过程完全相同 |
+
 ## 用它跑一个回测：会发生什么
 
 下面是完整可运行的例子（真的能编译运行，我们逐字验证过）。策略只有两句话：**空仓就买 100 股；持仓后当天收阳线（收盘价比开盘价高）就在第二天开盘价卖出。**
@@ -48,39 +49,42 @@ impl Strategy for Simple {
     // 每天开盘前，引擎会来问你一次：今天想下什么单？
     fn on_bar(&mut self, bar: &Bar, ctx: &StrategyCtx) -> Vec<OrderIntent> {
         if ctx.net_qty == 0 {
-            // 空仓：市价买 100 股（Qty 是整数定点数，100 股写成 100 * 10^8）
+            // 空仓：市价买 100 股。
+            // 为什么乘 1 亿？程序内部所有价格、数量、金额都用"放大 1 亿倍的整数"记，
+            // 彻底不用小数——没有小数就没有舍入误差，这是"跑一万遍结果完全一样"的根基。
             vec![OrderIntent { side: Side::Buy, kind: OrderKind::Market, qty: Qty::from_raw(100 * 100_000_000) }]
         } else if bar.close.raw() > bar.open.raw() {
-            // 持仓且收阳：按当天开盘价挂限价卖单，卖掉全部持仓
+            // 持仓且今天收阳线（收盘 > 开盘）：挂卖单，把手里股票全部卖掉
             vec![OrderIntent { side: Side::Sell, kind: OrderKind::Limit { limit: bar.open }, qty: Qty::from_raw(ctx.net_qty as i64) }]
         } else {
-            vec![] // 其余情况不动
+            vec![] // 其他情况：什么都不做
         }
     }
 }
 
 fn main() {
-    // 行情数据：这里直接内嵌两根 K 线，实际使用时从 CSV 文件读入
+    // 行情数据：示例里直接写死两根 K 线（一行 = 一天的行情）；
+    // 真实使用时换成读 CSV 文件，做法见下文"数据接入"一节。
     let bars = parse_bars_csv(
         "ts,open,high,low,close,volume\n20260105,10.00,10.50,9.80,10.40,10000\n20260106,10.50,11.00,10.20,10.90,12000\n",
     ).unwrap();
 
-    // 回测配置：手续费、滑点、初始资金等
+    // 回测规则设定：收多少费、滑多大、带多少钱进场
     let cfg = BacktestConfig {
         fees: FeeModel {
-            commission: Rate::from_raw(30_000),    // 佣金 0.03%（费率单位是 1e-8，30_000 即 0.0003）
+            commission: Rate::from_raw(30_000),    // 佣金 0.03%（费率也放大 1 亿倍：0.03% = 0.0003 = 30_000）
             stamp_duty: Rate::from_raw(1_000_000), // 印花税 1%，只在卖出时收
-            transfer_fee: Rate::from_raw(0),       // 过户费：关闭
+            transfer_fee: Rate::from_raw(0),       // 过户费：填 0 = 不收
         },
         matcher: MatcherConfig {
-            slippage_raw: 100,                     // 滑点 0.01 元：买贵一分、卖贱一分
+            slippage_raw: 100,                     // 滑点 0.01 元：买的时候多算一分、卖的时候少算一分
             limit_up: None, limit_down: None, min_lot_raw: 0,
         },
-        guard: GuardConfig {                       // 止损引擎的内部容量参数，照抄即可
+        guard: GuardConfig {                       // 止损引擎的容量参数：新手照抄即可
             base_price_raw: 100_000, bucket_span_raw: 1_000, buckets: 256, bucket_cap: 8, max_rules: 16,
         },
-        initial_cash_raw: 100_000_000_000_000,     // 初始资金 100 万元
-        snapshot_every: 4,
+        initial_cash_raw: 100_000_000_000_000,     // 初始资金 100 万元（同样放大 1 亿倍：1 元 = 1 亿）
+        snapshot_every: 4,                         // 每隔 4 笔交易动作存一次档，方便事后排查（0 = 不存）
     };
 
     let mut bt = Backtester::new(cfg).unwrap();
@@ -88,7 +92,7 @@ fn main() {
 
     println!("成交笔数: {}", report.fills);
     println!("最终持仓: {} 股", report.final_net_qty);
-    println!("最终资金: {} 元", report.final_cash_raw as f64 / 1e8); // 内部是整数，展示时才除
+    println!("最终资金: {} 元", report.final_cash_raw as f64 / 1e8); // 资金内部是放大 1 亿倍的整数，给人看时除回 1 亿
     println!("过程指纹: {:#018x}", report.event_hash);
 }
 ```
@@ -102,13 +106,13 @@ use keel_core::Price;
 use keel_guard::{RuleKind, RuleSpec, TriggerSide};
 
 bt.register_guard(RuleSpec {
-    id: 1, ts: 0,
-    side: TriggerSide::SellStop,
-    kind: RuleKind::Fixed,                 // 固定价位止损
-    trigger: Price::from_raw(95_000),      // 9.50 元触发（价格单位 1e-4）
-    extreme: Price::from_raw(0),
-    trail: Qty::from_raw(0),
-    bound_qty: Qty::from_raw(100 * 100_000_000),
+    id: 1, ts: 0,                          // 规则编号和登记时间，编号自己起
+    side: TriggerSide::SellStop,           // 卖出止损：往下跌破触发价就卖
+    kind: RuleKind::Fixed,                 // 固定价位止损（另一种是"追踪止损"，跟着最高价走）
+    trigger: Price::from_raw(95_000),      // 跌到 9.50 元触发（价格放大 1 万倍：1 元 = 10000）
+    extreme: Price::from_raw(0),           // 固定止损用不到，填 0
+    trail: Qty::from_raw(0),               // 同上，追踪止损才用
+    bound_qty: Qty::from_raw(100 * 100_000_000), // 触发后卖多少股（这里是全部 100 股）
 }).unwrap();
 ```
 
