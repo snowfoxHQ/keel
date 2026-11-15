@@ -11,5 +11,5 @@ pub mod hash {
 }
 
 pub use event::{Event, EventKey, EventQueue, Phase, QueueError};
-pub use fixed::{Money, Price, Qty, Rate, RAW_BOUND};
+pub use fixed::{FixedError, Money, Price, Qty, Rate, RAW_BOUND};
 pub use pool::{Arena, Handle, Pool, PoolError};
