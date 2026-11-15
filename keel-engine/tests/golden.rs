@@ -115,6 +115,81 @@ fn deterministic_across_runs() {
     assert_eq!(a.fills, b.fills);
 }
 
+// ---- P7-b：真实行情数据回归（keel-ingest 清洗产物，sh600519 前复权日线 117 根） ----
+
+/// 真实数据锚值（2026-11-15 P7-b 首次验证运行固化；变更须显式重新生成并记录）。
+/// runs：fills=30（15 对买卖往返）、realized=−1546.30 元（滑点+波动损耗）、
+/// fees=2141.24 元（佣金 3e-6 + 印花税 1% 卖出）。
+const GOLDEN_REAL_EVENT_HASH: u64 = 0x97a4_6aed_a307_ddc2;
+
+/// 真实数据上的确定性周期策略：净仓 0 且序号 %8==1 → 市价买 100 股；
+/// 持仓且序号 %16==0 → 按当根开盘价限价平全部。
+struct RealCycle {
+    i: u64,
+}
+
+impl Strategy for RealCycle {
+    fn on_bar(&mut self, bar: &Bar, ctx: &keel_engine::StrategyCtx) -> Vec<OrderIntent> {
+        self.i += 1;
+        if ctx.net_qty == 0 && self.i % 8 == 1 {
+            vec![OrderIntent {
+                side: Side::Buy,
+                kind: OrderKind::Market,
+                qty: q(100),
+            }]
+        } else if ctx.net_qty > 0 && self.i % 8 == 5 {
+            vec![OrderIntent {
+                side: Side::Sell,
+                kind: OrderKind::Limit { limit: bar.open },
+                qty: Qty::from_raw(ctx.net_qty as i64),
+            }]
+        } else {
+            vec![]
+        }
+    }
+}
+
+fn run_real() -> keel_engine::BacktestReport {
+    let mut c = cfg();
+    c.fees.stamp_duty = keel_core::Rate::from_raw(1_000_000); // 印花税 1%（真实费率）
+    c.snapshot_every = 0;
+    let bars = parse_bars_csv(include_str!("golden/bars_real.csv")).unwrap();
+    let mut bt = Backtester::new(c).unwrap();
+    bt.run(&bars, &mut RealCycle { i: 0 }).unwrap()
+}
+
+/// 真实数据回归：P7-b（keel-ingest 清洗 → keel-data 校验 → keel-engine 全链路）。
+/// 数据源：腾讯行情 sh600519 前复权日线 2025H1，117 根，全部经 0.01 网格 snap 归位。
+#[test]
+fn real_data_regression() {
+    let r = run_real();
+    // 端到端：有成交、终态清仓、现金自洽
+    assert!(r.fills > 0, "fills={}", r.fills);
+    assert_eq!(r.final_net_qty, 0);
+    assert_eq!(
+        r.final_cash_raw,
+        1_000_000_000_000_000 + r.final_realized_raw - r.final_fees_raw
+    );
+    // 事件哈希锚（首次运行打印后固化；变更须显式重新生成）
+    if GOLDEN_REAL_EVENT_HASH == 0 {
+        panic!(
+            "真实数据锚未固化：EVENT_HASH={:#018x} fills={} realized={} fees={}",
+            r.event_hash, r.fills, r.final_realized_raw, r.final_fees_raw
+        );
+    }
+    assert_eq!(r.event_hash, GOLDEN_REAL_EVENT_HASH);
+}
+
+/// 真实数据跨运行确定性（§13.5 延伸到真实数据）。
+#[test]
+fn real_data_deterministic() {
+    let a = run_real();
+    let b = run_real();
+    assert_eq!(a.event_hash, b.event_hash);
+    assert_eq!(a.final_cash_raw, b.final_cash_raw);
+    assert_eq!(a.fills, b.fills);
+}
+
 /// §13.1/2/4：端到端语义断言（成交数、持仓路径、快照锚点）。
 #[test]
 fn pipeline_semantics() {

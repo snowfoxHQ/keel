@@ -116,15 +116,6 @@ fn parse_price(s: &str, line_no: usize) -> Result<Price, DataError> {
     Ok(Price::from_raw(raw))
 }
 
-/// 十进制定点解析（数量，1e-8）。进撮合的数量适用 §4.2 撮合边界（2^44）。
-fn parse_qty(s: &str, line_no: usize) -> Result<Qty, DataError> {
-    let raw = parse_scaled(s, 8, line_no)?;
-    if raw.abs() >= RAW_BOUND {
-        return Err(DataError::OutOfBounds(line_no));
-    }
-    Ok(Qty::from_raw(raw))
-}
-
 /// 十进制定点解析（Bar 成交量，1e-8，仅统计）。
 ///
 /// **豁免 §4.2 撮合边界**：volume 不参与任何乘法/撮合/核算（v0 撮合全成全不成，
