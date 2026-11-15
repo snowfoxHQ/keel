@@ -11,3 +11,5 @@ keel-engine = { path = "../keel-engine" }
 keel-guard = { path = "../keel-guard" }
 keel-pnl = { path = "../keel-pnl" }
 keel-ingest = { path = "../keel-ingest" }
+# 唯一外部依赖（keel-ui 非内核）：在线拉取行情需要 HTTPS 客户端，std 无 TLS
+ureq = "2"

@@ -249,6 +249,104 @@ impl MaCross {
         self.closes[end - n..end].iter().map(|c| *c as i128).sum()
     }
 }
+// ---- 在线拉取真实行情（腾讯行情接口，前复权日线） ----
+
+/// 白名单校验 + 拉取 + 转 tushare 风格源 CSV（随后走与上传相同的清洗路径）。
+/// URL host 固定，只有查询参数变化且经白名单校验——无 SSRF 面。
+fn fetch_daily_csv(symbol: &str, start: &str, end: &str) -> Result<String, String> {
+    let sym_ok = symbol.len() == 8
+        && symbol.starts_with(['s', 'S'])
+        && symbol.bytes().skip(1).all(|c| c.is_ascii_lowercase() || c.is_ascii_digit());
+    if !sym_ok {
+        return Err("股票代码格式：s + 市场 + 代码，如 sh600519（沪）、sz000001（深）".into());
+    }
+    let date_ok = |s: &str| {
+        s.len() == 10
+            && s.bytes().enumerate().all(|(i, c)| {
+                if i == 4 || i == 7 { c == b'-' } else { c.is_ascii_digit() }
+            })
+    };
+    if !date_ok(start) || !date_ok(end) {
+        return Err("日期格式：YYYY-MM-DD，如 2025-01-01".into());
+    }
+    let sym = symbol.to_ascii_lowercase();
+    let url = format!("https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param={sym},day,{start},{end},320,qfq");
+    let resp = ureq::get(&url)
+        .timeout(std::time::Duration::from_secs(15))
+        .call()
+        .map_err(|e| format!("行情接口连接失败：{e}（请检查网络后再试）"))?;
+    let body = resp.into_string().map_err(|_| "行情接口响应读取失败".to_string())?;
+    // qfq 模式返回 qfqday 键；个别场景（如指数）回落到 day 键
+    let rows = extract_kline_rows(&body, "qfqday")
+        .or_else(|| extract_kline_rows(&body, "\"day\""))
+        .ok_or("行情接口未返回该代码的日线数据（代码是否正确？区间是否有行情？）")?;
+    let mut out = String::from("ts_code,trade_date,open,high,low,close,vol,amount\n");
+    for fields in &rows {
+        let date = fields[0].replace('-', "");
+        let vol_int = fields[5].split('.').next().unwrap_or("0"); // 手数取整（.000 尾巴）
+        out.push_str(&format!(
+            "{},{},{},{},{},{},{},0\n",
+            sym.to_uppercase(),
+            date,
+            fields[1], // open
+            fields[3], // high
+            fields[4], // low
+            fields[2], // close
+            vol_int,
+        ));
+    }
+    Ok(out)
+}
+
+/// 专用 JSON 扫描器：从腾讯 kline 响应提取 `"<key>":[["2025-01-02","1444.00",...],...]`
+/// 的内层数组字段列表。响应结构固定（日期/数字字符串，无转义字符），不值得为它
+/// 引入通用 JSON 解析器。返回每行的字符串字段（每行 ≥6 个，多余字段忽略）。
+fn extract_kline_rows(body: &str, key: &str) -> Option<Vec<Vec<String>>> {
+    let pos = body.find(key)?;
+    let b = body.as_bytes();
+    let mut i = pos + key.len();
+    while i < b.len() && b[i] != b'[' {
+        i += 1; // 跳到外层 [
+    }
+    if i >= b.len() {
+        return None;
+    }
+    i += 1;
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut fields: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    let mut in_str = false;
+    let mut level = 1usize;
+    while i < b.len() {
+        let c = b[i];
+        if in_str {
+            if c == b'"' {
+                fields.push(std::mem::take(&mut cur));
+                in_str = false;
+            } else {
+                cur.push(c as char); // 字段均为 ASCII（日期/数字）
+            }
+        } else {
+            match c {
+                b'"' => in_str = true,
+                b'[' => level += 1,
+                b']' => {
+                    level -= 1;
+                    if level == 1 && !fields.is_empty() {
+                        rows.push(std::mem::take(&mut fields));
+                    }
+                    if level == 0 {
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+        i += 1;
+    }
+    if rows.is_empty() { None } else { Some(rows) }
+}
+
 // ---- 回测执行 + JSON 输出 ----
 
 /// 自动识别行情格式：黄金 CSV 直接用；tushare 风格源数据（首行含 ts_code）
@@ -286,6 +384,11 @@ fn run_backtest(body: &str) -> Result<String, String> {
     let f = parse_form(body);
     let csv_text = match f.get("source").map(String::as_str) {
         Some("builtin") => SAMPLE.to_string(),
+        Some("web") => fetch_daily_csv(
+            f.get("symbol").map(String::as_str).unwrap_or("sh600519"),
+            f.get("date_start").map(String::as_str).unwrap_or("2025-01-01"),
+            f.get("date_end").map(String::as_str).unwrap_or("2025-06-30"),
+        )?,
         _ => f.get("csv").cloned().ok_or("没有行情数据：请上传文件或选择内置样本")?,
     };
     let bars = parse_any_csv(&csv_text)?;

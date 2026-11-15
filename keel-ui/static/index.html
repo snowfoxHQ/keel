@@ -16,6 +16,13 @@
     <section>
       <h2>1 · 行情数据</h2>
       <label class="btn"><input type="radio" name="source" value="builtin" checked> 用内置样本（贵州茅台 2025 上半年日线）</label>
+      <label class="btn"><input type="radio" name="source" value="web"> 在线下载真实行情（输入代码和日期）</label>
+      <div id="param_web" class="params hidden">
+        <label>股票代码 <input type="text" id="symbol" value="sh600519" placeholder="sh600519 / sz000001"></label>
+        <label>开始日期 <input type="text" id="date_start" value="2025-01-01" placeholder="2025-01-01"></label>
+        <label>结束日期 <input type="text" id="date_end" value="2025-06-30" placeholder="2025-06-30"></label>
+        <p class="hint">代码 = s + 市场 + 6 位数字：sh 沪市、sz 深市，如 sh600036（招商银行）。前复权日线，来自腾讯行情接口。</p>
+      </div>
       <label class="btn"><input type="radio" name="source" value="file"> 用自己的数据（CSV 文件，自动识别格式）</label>
       <input type="file" id="file" accept=".csv" disabled>
       <p class="hint">支持两种：① 黄金 CSV（六列 ts,open,high,low,close,volume）；② 行情软件 / tushare 风格导出（ts_code,trade_date,open,high,low,close,vol,amount）——系统自动清洗：复权价浮点归位 0.01 元网格，脏行剔除，其余照常回测</p>

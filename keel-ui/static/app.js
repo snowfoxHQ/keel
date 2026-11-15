@@ -7,7 +7,11 @@ $("strategy").addEventListener("change", () => {
   $("param_ma").classList.toggle("hidden", kind !== "ma_cross");
 });
 document.querySelectorAll('input[name="source"]').forEach((r) =>
-  r.addEventListener("change", () => { $("file").disabled = document.querySelector('input[name="source"]:checked').value !== "file"; })
+  r.addEventListener("change", () => {
+    const v = document.querySelector('input[name="source"]:checked').value;
+    $("file").disabled = v !== "file";
+    $("param_web").classList.toggle("hidden", v !== "web");
+  })
 );
 
 let fileCsv = null;
@@ -29,6 +33,11 @@ $("run").addEventListener("click", async () => {
     const params = new URLSearchParams();
     params.set("source", source);
     if (source === "file") params.set("csv", fileCsv);
+    if (source === "web") {
+      params.set("symbol", $("symbol").value.trim());
+      params.set("date_start", $("date_start").value.trim());
+      params.set("date_end", $("date_end").value.trim());
+    }
     params.set("strategy", $("strategy").value);
     for (const id of ["hold_days", "fast", "slow", "cash_yuan", "commission_bp", "stamp_bp", "transfer_bp", "slippage_cents", "stop_yuan"]) {
       if ($(id)) params.set(id, $(id).value.trim());
